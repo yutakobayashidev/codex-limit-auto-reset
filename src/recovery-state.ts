@@ -2,7 +2,10 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 
-const schema = z.object({ pendingCreditId: z.string().min(1).nullable() });
+const schema = z.object({
+  pendingCreditId: z.string().min(1).nullable(),
+  idempotencyKey: z.string().min(1).optional(),
+});
 export type RecoveryState = z.infer<typeof schema>;
 
 export const loadRecoveryState = async (path: string): Promise<RecoveryState> => {

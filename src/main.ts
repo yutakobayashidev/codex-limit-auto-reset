@@ -1,24 +1,31 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { checkCredits } from "./check.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import { clientInfo } from "./client-info.ts";
+import type { CodexClient } from "./codex-client.ts";
 import { createCodexClient } from "./codex-client.ts";
 import { parseConfig } from "./config.ts";
+import { describeError } from "./errors.ts";
 import { createLogger } from "./log.ts";
 import { loadRecoveryState, saveRecoveryState } from "./recovery-state.ts";
+import { checkCredits } from "./usage-check.ts";
 
 const log = createLogger();
-let client: ReturnType<typeof createCodexClient> | undefined;
+
+// As PID 1 in a container Node ignores SIGTERM unless it is handled, so `docker stop` would hang.
+// The listeners stay registered: execa re-raises a signal once nothing else is listening for it.
+const shutdown = new AbortController();
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    shutdown.abort();
+  });
+}
+
+let client: CodexClient | undefined;
 let operation: "initialize" | "check" = "initialize";
 try {
   const config = parseConfig(process.env);
-  client = createCodexClient({
-    command: config.CODEX_BIN,
-    clientInfo: {
-      name: "codex_limit_auto_reset",
-      title: "Codex Limit Auto Reset",
-      version: "0.1.0",
-    },
-  });
+  client = createCodexClient({ command: config.CODEX_BIN, clientInfo });
   const statePath =
     config.STATE_FILE ??
     join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "codex-limit-auto-reset", "recovery.json");
@@ -32,14 +39,16 @@ try {
   };
   await client.initialize();
   operation = "check";
-  while (true) {
+  while (!shutdown.signal.aborted) {
     const nextCheckInMs = await checkCredits(client, config.REDEEM_BEFORE_MINUTES, log, Date.now, usage);
-    await new Promise((resolve) => setTimeout(resolve, nextCheckInMs));
+    await sleep(nextCheckInMs, undefined, { signal: shutdown.signal });
   }
-} catch {
-  // Avoid dumping raw errors, which may include authentication or RPC payloads.
-  log({ event: "check_failed", operation, error_type: "operation_failed" });
-  process.exitCode = 1;
+} catch (error) {
+  // A shutdown interrupts the sleep, and Ctrl-C also stops app-server mid-request: neither is a failure.
+  if (!shutdown.signal.aborted) {
+    log({ event: "check_failed", operation, ...describeError(error) });
+    process.exitCode = 1;
+  }
 } finally {
   client?.close();
 }

@@ -18,6 +18,12 @@ describe("parseConfig", () => {
     expect(() => parseConfig({ REDEEM_BEFORE_MINUTES: "0" })).toThrow();
     expect(() => parseConfig({ REDEEM_BEFORE_MINUTES: "abc" })).toThrow();
   });
+
+  it("names the setting it rejects", () => {
+    expect(() => parseConfig({ REDEEM_BEFORE_MINUTES: "abc" })).toThrow(
+      /Invalid configuration: REDEEM_BEFORE_MINUTES: /,
+    );
+  });
 });
 
 it("accepts opt-in usage monitoring including exhaustion-only zero", () => {

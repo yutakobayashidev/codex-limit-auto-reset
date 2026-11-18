@@ -1,107 +1,81 @@
-import type { createCodexClient } from "./codex-client.ts";
-import type { RateLimitCredits } from "./codex-schemas.ts";
+import { randomUUID } from "node:crypto";
+import type { CodexClient } from "./codex-client.ts";
+import { describeError } from "./errors.ts";
 import type { Logger } from "./log.ts";
-import type { RecoveryState } from "./recovery-state.ts";
 import { retry } from "./retry.ts";
 
 const RESCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
-type Client = Pick<ReturnType<typeof createCodexClient>, "refreshAccount" | "readCredits" | "consumeCredit">;
-export type UsageOptions = {
-  remainingPercent?: number;
-  pollIntervalSeconds?: number;
-  recovery?: RecoveryState;
-  saveRecovery?: () => Promise<void>;
-};
-
-// Only the main Codex allowance can trigger a full reset, not model-specific limits.
-const remainingUsage = (response: RateLimitCredits, now: number): number | undefined => {
-  const snapshot = response.rateLimitsByLimitId?.codex ?? response.rateLimits;
-  if (!snapshot || (snapshot.limitId != null && snapshot.limitId !== "codex")) return undefined;
-  const remaining = [snapshot.primary, snapshot.secondary].flatMap((window) =>
-    window && (window.resetsAt == null || window.resetsAt * 1000 > now) ? [Math.max(0, 100 - window.usedPercent)] : [],
-  );
-  return remaining.length ? Math.min(...remaining) : undefined;
-};
+// How soon to ask again when app-server could not say when the credits expire.
+const DETAILS_RETRY_INTERVAL_MS = 10 * 60 * 1000;
+const MIN_RECHECK_INTERVAL_MS = 60 * 1000;
+type Client = Pick<CodexClient, "refreshAccount" | "readCredits" | "consumeCredit">;
 
 export const checkCredits = async (
   client: Client,
   redeemBeforeMinutes: number,
   log: Logger,
   now: () => number = Date.now,
-  usage: UsageOptions = {},
 ): Promise<number> => {
-  const monitoring = usage.remainingPercent !== undefined;
-  const pollMs = (usage.pollIntervalSeconds ?? 60) * 1000;
-  const recovery = usage.recovery ?? { pendingCreditId: null };
-  await retry(() => client.refreshAccount());
-  const response = await retry(() => client.readCredits());
-  const remaining = remainingUsage(response, now());
-  const low = monitoring && remaining !== undefined && remaining <= (usage.remainingPercent ?? 0);
-  const credits = response.rateLimitResetCredits.credits
-    .filter(
-      (credit) =>
-        credit.status === "available" &&
-        credit.resetType === "codexRateLimits" &&
-        (credit.expiresAt === null || credit.expiresAt * 1000 > now()),
-    )
-    .sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity) || a.id.localeCompare(b.id));
+  const redeemBeforeMs = redeemBeforeMinutes * 60_000;
 
-  // Checkpoint before sending: even a lost reply or process restart must not spend the next card.
-  if (monitoring && recovery.pendingCreditId !== null) {
-    if (remaining !== undefined && remaining > (usage.remainingPercent ?? 0)) {
-      recovery.pendingCreditId = null;
-      await usage.saveRecovery?.();
-    } else if (!credits.some((credit) => credit.id === recovery.pendingCreditId)) {
-      log({ event: "usage_recovery_pending", credit_id: recovery.pendingCreditId });
-      log({ event: "next_check", delay_ms: pollMs });
-      return pollMs;
-    }
+  await retry(() => client.refreshAccount());
+  const { rateLimitResetCredits: summary } = await retry(() => client.readCredits());
+  const credits = summary.credits
+    .flatMap((credit) => {
+      if (credit.status === "available" && credit.resetType === "codexRateLimits") {
+        if (credit.expiresAt && credit.expiresAt * 1000 > now()) {
+          return [{ id: credit.id, expiresAtMs: credit.expiresAt * 1000 }];
+        }
+      }
+      return [];
+    })
+    .sort((a, b) => a.expiresAtMs - b.expiresAtMs);
+  const due = credits.filter((credit) => credit.expiresAtMs - redeemBeforeMs <= now());
+
+  // app-server falls back to a bare count when its detail lookup fails, which hides every expiry time.
+  const detailsUnavailable = summary.availableCount > 0 && summary.credits.length === 0;
+  if (detailsUnavailable) {
+    log({ event: "credit_details_unavailable", available_count: summary.availableCount });
   }
 
-  const due = credits.find(
-    (credit) => credit.expiresAt !== null && credit.expiresAt * 1000 - redeemBeforeMinutes * 60_000 <= now(),
-  );
-  const selected =
-    recovery.pendingCreditId !== null
-      ? credits.find((credit) => credit.id === recovery.pendingCreditId)
-      : low
-        ? credits[0]
-        : due;
-  const reason = low ? "low_usage" : "expiry";
-  if (selected) {
-    if (monitoring) {
-      recovery.pendingCreditId = selected.id;
-      await usage.saveRecovery?.();
-    }
+  const settled = new Set<string>();
+  for (const credit of due) {
+    // One key per redemption attempt, shared by its retries only, as the app-server protocol asks.
+    const idempotencyKey = randomUUID();
     let attempt = 0;
     const { outcome } = await retry(async () => {
       attempt += 1;
-      log({ event: "credit_redemption_attempt", credit_id: selected.id, attempt, reason });
+      log({ event: "credit_redemption_attempt", credit_id: credit.id, attempt });
       try {
-        return await client.consumeCredit(selected.id, selected.id);
+        return await client.consumeCredit(credit.id, idempotencyKey);
       } catch (error) {
-        log({
-          event: "credit_redemption_error",
-          credit_id: selected.id,
-          attempt,
-          reason,
-          error_type: "operation_failed",
-        });
+        log({ event: "credit_redemption_error", credit_id: credit.id, attempt, ...describeError(error) });
         throw error;
       }
     });
-    log({ event: "credit_redemption_result", credit_id: selected.id, attempt, reason, outcome });
-    // Definitive non-redemption outcomes can be checked again on the next scheduled scan.
-    if (monitoring && (outcome === "nothingToReset" || outcome === "noCredit")) {
-      recovery.pendingCreditId = null;
-      await usage.saveRecovery?.();
+    log({ event: "credit_redemption_result", credit_id: credit.id, attempt, outcome });
+    if (outcome !== "nothingToReset") {
+      settled.add(credit.id);
+    }
+    // A reset leaves nothing for the next credit to reset, and "nothing to reset" is true of them all.
+    if (outcome === "reset" || outcome === "nothingToReset") {
+      break;
     }
   }
+  // A credit left in the window is still redeemable. It is tried again after half the time it has
+  // left, so the attempts close in on its expiry without polling for the whole window.
+  const retries = due
+    .filter((credit) => !settled.has(credit.id))
+    .map((credit) => Math.max(Math.floor((credit.expiresAtMs - now()) / 2), MIN_RECHECK_INTERVAL_MS));
 
-  const resetTimes = credits
-    .filter((credit) => credit.id !== selected?.id && credit.expiresAt !== null)
-    .map((credit) => Math.max(pollMs, (credit.expiresAt ?? 0) * 1000 - redeemBeforeMinutes * 60_000 - now()));
-  const nextCheckInMs = Math.min(...resetTimes, monitoring ? pollMs : RESCAN_INTERVAL_MS);
+  const upcoming = credits
+    .filter((credit) => !due.includes(credit))
+    .map((credit) => credit.expiresAtMs - redeemBeforeMs - now());
+  const nextCheckInMs = Math.min(
+    ...retries,
+    ...upcoming,
+    detailsUnavailable ? DETAILS_RETRY_INTERVAL_MS : RESCAN_INTERVAL_MS,
+  );
   log({ event: "next_check", delay_ms: nextCheckInMs });
   return nextCheckInMs;
 };
