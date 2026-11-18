@@ -79,3 +79,10 @@ Its notification timestamp is an observation/delivery time, not confirmation tha
 an individual account recovered. Keep its public announcement notification and
 this private account advice as independent modules; neither needs to control
 Codex sessions or change the other monitor's delivery state.
+
+`codex-auth` keeps the previous `updated_at` when values are unchanged. For each
+`list --api --json` call, the adapter records its own observation time only when
+that account reports `refresh.requested=true`, `method=api`, `status=ok`, and
+`source=api`. This both keeps idle accounts fresh and records unchanged samples
+needed for consumption estimates. Failed/local/unrequested snapshots retain their
+original timestamp and remain excluded as appropriate.

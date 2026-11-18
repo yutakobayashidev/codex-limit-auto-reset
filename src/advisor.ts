@@ -22,7 +22,11 @@ export const accountsSchema = z.object({
           primary: windowSchema.nullable(),
           secondary: windowSchema.nullable(),
           reset_credit: z.array(z.object({ status: z.string(), expires_at: z.string().nullable() })).default([]),
-          refresh: z.object({ status: z.string() }),
+          refresh: z.object({
+            status: z.string(),
+            requested: z.boolean().optional(),
+            method: z.string().nullable().optional(),
+          }),
         })
         .nullable(),
     }),
@@ -260,4 +264,17 @@ export function shouldNotify(advice: Advice, state: State, now: number, options:
   if (!state.last) return true;
   // Even oscillating choices cannot generate a flood; unchanged advice repeats only after the cooldown.
   return now - state.last.sentAt >= (state.last.fingerprint === advice.fingerprint ? options.cooldownSeconds : 1800);
+}
+
+// codex-auth preserves updated_at when a successful API snapshot is unchanged.
+// Only a confirmed API request may advance the local observation timestamp.
+export function confirmApiObservations(accounts: Account[], observedAt: number): Account[] {
+  return accounts.map((a) =>
+    a.usage?.refresh.requested === true &&
+    a.usage.refresh.method === "api" &&
+    a.usage.refresh.status === "ok" &&
+    a.usage.source === "api"
+      ? { ...a, usage: { ...a.usage, updated_at: observedAt } }
+      : a,
+  );
 }

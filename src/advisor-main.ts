@@ -5,7 +5,16 @@ import { dirname, join } from "node:path";
 import { execa } from "execa";
 import { z } from "zod";
 import type { State } from "./advisor.ts";
-import { accountsSchema, advise, defaults, forecast, observe, shouldNotify, stateSchema } from "./advisor.ts";
+import {
+  accountsSchema,
+  advise,
+  confirmApiObservations,
+  defaults,
+  forecast,
+  observe,
+  shouldNotify,
+  stateSchema,
+} from "./advisor.ts";
 import { snapshots } from "./advisor-telemetry.ts";
 
 const config = z
@@ -57,7 +66,7 @@ try {
     timeout: 90_000,
     maxBuffer: 2 * 1024 * 1024,
   });
-  const accounts = accountsSchema.parse(JSON.parse(stdout)).accounts;
+  const accounts = confirmApiObservations(accountsSchema.parse(JSON.parse(stdout)).accounts, Date.now() / 1000);
   let raw: unknown = null;
   try {
     const res = await fetch("https://nextreset.ai/api/forecast", {

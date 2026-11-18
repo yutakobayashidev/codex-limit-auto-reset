@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { expect, it } from "vitest";
-import { type Account, defaults } from "../src/advisor.ts";
+import { type Account, confirmApiObservations, defaults } from "../src/advisor.ts";
 import { snapshots } from "../src/advisor-telemetry.ts";
 
 it("exports all accounts without identifiers, marks unknown runway and excludes stale quotas", () => {
@@ -38,4 +38,23 @@ it("exports all accounts without identifiers, marks unknown runway and excludes 
   });
   expect(out.find((e) => e.event === "forecast_snapshot")).toMatchObject({ probability: 0.6, horizon_hours: 24 });
   expect(snapshots([], {}, null, now, defaults)).toEqual([]);
+  const old = {
+    ...a,
+    usage: { ...a.usage, updated_at: now - 10000, refresh: { status: "ok", method: "api", requested: true } },
+  };
+  const confirmed = confirmApiObservations([old], now);
+  expect(confirmed[0]?.usage?.updated_at).toBe(now);
+  expect(snapshots(confirmed, {}, null, now, defaults).some((e) => e.event === "usage_snapshot")).toBe(true);
+  expect(
+    confirmApiObservations(
+      [{ ...old, usage: { ...old.usage, refresh: { status: "error", method: "api", requested: true } } }],
+      now,
+    )[0]?.usage?.updated_at,
+  ).toBe(now - 10000);
+  expect(
+    confirmApiObservations(
+      [{ ...old, usage: { ...old.usage, refresh: { status: "ok", method: "api", requested: false } } }],
+      now,
+    )[0]?.usage?.updated_at,
+  ).toBe(now - 10000);
 });
