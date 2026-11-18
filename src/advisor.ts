@@ -76,6 +76,10 @@ export const fresh = (a: Account, now: number, options: Options) =>
   windows(a).length > 0 &&
   windows(a).every((w) => w.resets_at > now);
 
+// API deadlines can oscillate by a second. Anchor stored samples to the first
+// deadline of the segment so small successive shifts cannot accumulate forever.
+const sameResetWindow = (a: number, b: number) => Math.abs(a - b) <= 5;
+
 export function observe(accounts: Account[], previous: History, now: number, options: Options): History {
   const history: History = {};
   for (const a of accounts.filter((a) => fresh(a, now, options))) {
@@ -84,9 +88,14 @@ export function observe(accounts: Account[], previous: History, now: number, opt
       const id = key(`${a.account_key}:${w.window_minutes}`);
       let samples = (previous[id] ?? []).filter((s) => now - s.at <= options.historySeconds && s.at <= now);
       const last = samples.at(-1);
-      if (last && (last.reset !== w.resets_at || last.used > w.used_percent)) samples = [];
+      if (last && (!sameResetWindow(last.reset, w.resets_at) || last.used > w.used_percent)) samples = [];
       if (!last || a.usage.updated_at > last.at)
-        samples.push({ at: a.usage.updated_at, used: w.used_percent, reset: w.resets_at, active: a.active });
+        samples.push({
+          at: a.usage.updated_at,
+          used: w.used_percent,
+          reset: samples.at(-1)?.reset ?? w.resets_at,
+          active: a.active,
+        });
       history[id] = samples.slice(-200);
     }
   }
@@ -103,7 +112,14 @@ export function rate(samples: Sample[], options: Options): number | null {
     const b = samples[i];
     assert(a && b);
     const dt = b.at - a.at;
-    if (!a.active || !b.active || dt <= 0 || dt > options.maxGapSeconds || a.reset !== b.reset || b.used < a.used)
+    if (
+      !a.active ||
+      !b.active ||
+      dt <= 0 ||
+      dt > options.maxGapSeconds ||
+      !sameResetWindow(a.reset, b.reset) ||
+      b.used < a.used
+    )
       continue;
     seconds += dt;
     used += b.used - a.used;

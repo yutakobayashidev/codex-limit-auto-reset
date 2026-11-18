@@ -87,6 +87,52 @@ describe("consumption history", () => {
     const reset = observe([a], h, now + 300, defaults);
     expect(Object.values(reset)[0]).toHaveLength(1);
   });
+  it("retains samples and estimates consumption across deadline jitter", () => {
+    const a = account("A", 40, true);
+    const anchor = a.usage!.primary!.resets_at;
+    let h: History = {};
+    for (const [i, offset] of [0, 1, 0, -1, 5].entries()) {
+      a.usage!.updated_at = now + i * 300;
+      a.usage!.primary!.resets_at = anchor + offset;
+      a.usage!.primary!.used_percent = 40 + i;
+      h = observe([a], h, now + i * 300, defaults);
+    }
+    const samples = Object.values(h)[0]!;
+    expect(samples).toHaveLength(5);
+    expect(samples.every((s) => s.reset === anchor)).toBe(true);
+    expect(rate(samples, defaults)).toBe(15);
+    // Already stored, unnormalised samples use the same jitter tolerance.
+    expect(
+      rate(
+        samples.map((s, i) => ({ ...s, reset: anchor + (i % 2) })),
+        defaults,
+      ),
+    ).toBe(15);
+  });
+  it("bounds cumulative deadline drift and splits on a real window change", () => {
+    const a = account("A", 40, true);
+    const anchor = a.usage!.primary!.resets_at;
+    let h = observe([a], {}, now, defaults);
+    for (const [i, offset] of [3, 6].entries()) {
+      a.usage!.updated_at = now + (i + 1) * 300;
+      a.usage!.primary!.resets_at = anchor + offset;
+      a.usage!.primary!.used_percent++;
+      h = observe([a], h, a.usage!.updated_at, defaults);
+    }
+    expect(Object.values(h)[0]).toHaveLength(1);
+    a.usage!.updated_at += 300;
+    a.usage!.primary!.resets_at += 86400;
+    h = observe([a], h, a.usage!.updated_at, defaults);
+    expect(Object.values(h)[0]).toHaveLength(1);
+  });
+  it("still splits on decreased usage even if the deadline only shifts one second", () => {
+    const a = account("A", 90, true);
+    const h = history(a);
+    a.usage!.updated_at += 300;
+    a.usage!.primary!.resets_at++;
+    a.usage!.primary!.used_percent = 1;
+    expect(Object.values(observe([a], h, now + 300, defaults))[0]).toHaveLength(1);
+  });
   it("removes stale accounts from observations", () => {
     const a = account("A");
     a.usage!.refresh.status = "failed";

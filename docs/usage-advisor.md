@@ -86,3 +86,9 @@ that account reports `refresh.requested=true`, `method=api`, `status=ok`, and
 `source=api`. This both keeps idle accounts fresh and records unchanged samples
 needed for consumption estimates. Failed/local/unrequested snapshots retain their
 original timestamp and remain excluded as appropriate.
+
+Reset deadlines may jitter by a second in otherwise identical API responses.
+History and rate estimation tolerate up to five seconds of deadline variation.
+Each segment keeps its original deadline as an anchor, preventing repeated small
+shifts from drifting indefinitely. A larger deadline change or any observed
+usage decrease starts a new segment; neither is counted as consumption.
