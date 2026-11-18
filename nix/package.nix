@@ -6,6 +6,7 @@
   nodejs,
   pnpm_11,
   pnpmConfigHook,
+  util-linux,
 }:
 
 stdenv.mkDerivation (finalAttrs: {
@@ -46,6 +47,11 @@ stdenv.mkDerivation (finalAttrs: {
       --add-flags $out/lib/${finalAttrs.pname}/dist/main.js
     makeWrapper ${nodejs}/bin/node $out/bin/codex-limit-auto-reset-cli \
       --add-flags $out/lib/${finalAttrs.pname}/dist/cli.js
+    ${lib.optionalString stdenv.hostPlatform.isLinux ''
+      makeWrapper ${nodejs}/bin/node $out/bin/codex-usage-advisor \
+        --add-flags $out/lib/${finalAttrs.pname}/dist/advisor-main.js \
+        --set FLOCK_BIN ${util-linux}/bin/flock
+    ''}
 
     runHook postInstall
   '';

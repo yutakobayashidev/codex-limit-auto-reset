@@ -161,3 +161,9 @@ defaults to the package configured by `programs.codex` when enabled, otherwise
 Authenticate with that Codex installation before enabling the service. Use
 `journalctl --user -u codex-limit-auto-reset` to inspect the worker.
 The package and Home Manager module are maintained here rather than requiring NUR.
+# Optional account advisor
+
+The personal fork also provides a Linux-only, advisory-only account monitor.
+It compares all codex-auth accounts and a Tibo reset forecast, emitting recommendations
+without switching accounts or consuming credits. See [usage advisor](docs/usage-advisor.md).
+
