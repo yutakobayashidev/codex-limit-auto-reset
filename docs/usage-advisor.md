@@ -59,3 +59,23 @@ Inspect `journalctl --user -u codex-usage-advisor.service`. The normal success e
 `advisor_checked`; failures log `advisor_failed` without raw auth or error payloads.
 
 Forecast source: https://nextreset.ai/forecast/ (unofficial heuristic).
+
+## Observability
+
+Normal polls emit `account_status`, `usage_snapshot`, `credit_snapshot`,
+`forecast_snapshot` and `advisor_status` JSON events for every account and valid
+forecast horizon. These events do not notify Discord. Account identifiers are
+hashed, and account numbers are local to the monitoring host. A selected account
+is not proof that an existing client process has reloaded its credentials.
+
+Numeric `-1` means unknown for speed, runway and credit expiry. Apply
+`last_over_time` before filtering negative values so an unknown observation
+clears an older estimate. Gate quota series with the latest account freshness
+and forecast series with the latest forecast validity; expire current values
+when no poll has succeeded for 15 minutes. Forecast probabilities are uncalibrated.
+
+The Tibo announcement monitor can feed its journal into the same Loki dashboard.
+Its notification timestamp is an observation/delivery time, not confirmation that
+an individual account recovered. Keep its public announcement notification and
+this private account advice as independent modules; neither needs to control
+Codex sessions or change the other monitor's delivery state.

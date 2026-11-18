@@ -6,6 +6,7 @@ import { execa } from "execa";
 import { z } from "zod";
 import type { State } from "./advisor.ts";
 import { accountsSchema, advise, defaults, forecast, observe, shouldNotify, stateSchema } from "./advisor.ts";
+import { snapshots } from "./advisor-telemetry.ts";
 
 const config = z
   .object({
@@ -74,6 +75,16 @@ try {
   state.history = observe(accounts, state.history, now, options);
   const predictions = forecast(raw, now);
   const advice = advise(accounts, state.history, predictions, now, options);
+  if (!dryRun) {
+    for (const event of snapshots(accounts, state.history, predictions, now, options)) log(event);
+    log({
+      event: "advisor_status",
+      observed_at: now,
+      accounts: accounts.length,
+      forecast_valid: Number(predictions !== null),
+      recommendation: advice?.kind ?? "none",
+    });
+  }
   if (advice && (dryRun || shouldNotify(advice, state, now, options))) {
     log({
       event: dryRun ? "advisory_preview" : "usage_advice",

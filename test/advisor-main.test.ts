@@ -40,12 +40,12 @@ it("only lists all accounts, persists deduplication, and keeps dry-run out of th
       execa(process.execPath, ["--import", preload, resolve("src/advisor-main.ts"), ...args], { env, reject: false });
     const first = await run("--lock-held");
     expect(first.exitCode).toBe(0);
-    expect(JSON.parse(first.stdout).event).toBe("usage_advice");
+    expect(JSON.parse(first.stdout.split("\n").at(-1) ?? "{}").event).toBe("usage_advice");
     expect(first.stdout).not.toContain("private-");
     const saved = await readFile(state, "utf8");
     expect(saved).not.toContain("private-");
     const second = await run("--lock-held");
-    expect(JSON.parse(second.stdout).event).toBe("advisor_checked");
+    expect(JSON.parse(second.stdout.split("\n").at(-1) ?? "{}").event).toBe("advisor_checked");
     const before = await readFile(state, "utf8");
     const preview = await run("--dry-run");
     expect(JSON.parse(preview.stdout).event).toBe("advisory_preview");
